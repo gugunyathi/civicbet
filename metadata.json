@@ -1,0 +1,6 @@
+{
+  "name": "Civic Bet",
+  "description": "Gamified prediction markets for public service delivery. Predict outage restoration times, earn points, and help cities improve.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

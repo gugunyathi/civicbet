@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { SearchDialog } from "@/components/SearchDialog";
 import { useStore, CURRENCY_META } from "@/lib/store";
 import { BurgerMenu } from "@/components/BurgerMenu";
+import { AuthButtonSmall } from "@/components/AuthGate";
 
 export function AppShell() {
   const { location } = useRouterState();
@@ -74,6 +75,7 @@ export function AppShell() {
           <Coins className="h-3.5 w-3.5" style={{ color: "var(--neon)" }} />
           <span className="font-mono text-neon" style={{ color: "var(--neon)" }}>{balances.points.toLocaleString()} pts</span>
         </Link>
+        <AuthButtonSmall />
       </header>
 
       {/* Content */}

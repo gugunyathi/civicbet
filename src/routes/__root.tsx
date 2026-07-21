@@ -5,10 +5,14 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { CDPReactProvider } from "@coinbase/cdp-react";
+import { useEvmAddress, useIsSignedIn } from "@coinbase/cdp-hooks";
 
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "@/components/AppShell";
 import { StoreProvider } from "@/lib/store";
+
+const CDP_PROJECT_ID = import.meta.env.VITE_CDP_PROJECT_ID ?? "";
 
 function NotFoundComponent() {
   return (
@@ -46,13 +50,32 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+/** Inner component that can access CDP hooks (must be inside CDPReactProvider) */
+function AuthenticatedStoreProvider({ children }: { children: React.ReactNode }) {
+  const { isSignedIn } = useIsSignedIn();
+  const { evmAddress } = useEvmAddress();
+  const userId = isSignedIn && evmAddress ? evmAddress : null;
+
+  return <StoreProvider userId={userId}>{children}</StoreProvider>;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
-    <QueryClientProvider client={queryClient}>
-      <StoreProvider>
-        <AppShell />
-      </StoreProvider>
-    </QueryClientProvider>
+    <CDPReactProvider
+      config={{
+        projectId: CDP_PROJECT_ID,
+        ethereum: {
+          createOnLogin: "smart", // Base smart account on sign-in
+        },
+        appName: "CivicBet",
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <AuthenticatedStoreProvider>
+          <AppShell />
+        </AuthenticatedStoreProvider>
+      </QueryClientProvider>
+    </CDPReactProvider>
   );
 }

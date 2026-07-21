@@ -125,18 +125,25 @@ type Store = {
 
 const StoreCtx = createContext<Store | null>(null);
 
-export function StoreProvider({ children }: { children: ReactNode }) {
+export function StoreProvider({ children, userId }: { children: ReactNode; userId?: string | null }) {
+  // Build auth headers — wallet address is the canonical user ID
+  const authHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(userId ? { "x-user-id": userId } : {}),
+  };
+
   const [profile, setProfileState] = useState<Profile>({
-    username: "@you",
-    displayName: "Civic Voter",
-    bio: "Prediction citizen. Reporting outages, betting on fixes.",
-    avatar: "🦉",
+    username: userId ? userId.slice(0, 6) + "..." + userId.slice(-4) : "@guest",
+    displayName: userId ? "Civic Voter" : "Guest",
+    bio: userId ? "Prediction citizen. Reporting outages, betting on fixes." : "Sign in to participate.",
+    avatar: userId ? "🦉" : "👤",
     location: "Johannesburg, ZA",
+    walletAddress: userId ?? undefined,
   });
   const [balances, setBalances] = useState<Balances>({
-    points: 2480,
-    usdc_base: 12.5,
-    usdt_sol: 8.2,
+    points: userId ? 2480 : 0,
+    usdc_base: userId ? 12.5 : 0,
+    usdt_sol: userId ? 8.2 : 0,
   });
   const [markets, setMarkets] = useState<Market[]>(SEED_MARKETS);
   const [trendingMarkets, setTrendingMarkets] = useState<Market[]>(SEED_MARKETS);
@@ -148,7 +155,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Function to load whole state from the API
   const refreshState = async () => {
     try {
-      const res = await fetch("/api/state");
+      const headers: Record<string, string> = {};
+      if (userId) headers["x-user-id"] = userId;
+      const res = await fetch("/api/state", { headers });
       if (res.ok) {
         const data = await res.json();
         if (data.profile) setProfileState(data.profile);
@@ -165,19 +174,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Re-load state whenever the user signs in/out
+  useEffect(() => { refreshState(); }, [userId]);
+
   // Load state on boot
   useEffect(() => {
     refreshState();
   }, []);
 
   const setProfile = (p: Partial<Profile>) => {
+    if (!userId) return; // guests cannot update profile
     // Optimistic Update
     setProfileState(prev => {
       const updated = { ...prev, ...p };
       // Save in background
       fetch("/api/profile", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders,
         body: JSON.stringify(updated),
       }).then(refreshState);
       return updated;
@@ -238,7 +251,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Send to server in background
     fetch("/api/bet", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({
         marketId: market.id,
         optionIndex,
@@ -299,7 +312,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Submit to server
     fetch("/api/confirmation", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({
         marketId,
         restored: input.restored,
@@ -354,7 +367,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Send to server in background
     fetch("/api/market", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({
         ref: input.ref,
         service: input.service,
@@ -408,14 +421,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Send to server in background
     fetch("/api/convert", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({ from, to, amount }),
     }).then(refreshState);
   };
 
   const triggerFaucet = async () => {
+    if (!userId) throw new Error("Sign in to claim faucet");
     try {
-      const res = await fetch("/api/faucet", { method: "POST" });
+      const res = await fetch("/api/faucet", { method: "POST", headers: authHeaders });
       if (res.ok) {
         await refreshState();
       } else {
@@ -429,10 +443,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const transfer = async (currency: Currency, amount: number, toAddress: string) => {
+    if (!userId) throw new Error("Sign in to transfer funds");
     if (amount <= 0 || balances[currency] < amount) throw new Error("Invalid amount or insufficient balance");
     const res = await fetch("/api/transfer", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({ currency, amount, toAddress }),
     });
     if (!res.ok) {
@@ -443,10 +458,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const deposit = async (currency: Currency, amount: number) => {
+    if (!userId) throw new Error("Sign in to deposit funds");
     if (amount <= 0) throw new Error("Invalid amount");
     const res = await fetch("/api/deposit", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({ currency, amount }),
     });
     if (!res.ok) {

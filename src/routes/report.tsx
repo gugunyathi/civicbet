@@ -5,6 +5,7 @@ import { SERVICES, CITIES, type ServiceKind } from "@/lib/data";
 import { useStore } from "@/lib/store";
 import { ArrowLeft, Sparkles, Upload, X } from "lucide-react";
 import { InteractiveMap } from "@/components/InteractiveMap";
+import { AuthGate } from "@/components/AuthGate";
 
 export const Route = createFileRoute("/report")({
   component: Report,
@@ -60,8 +61,9 @@ function Report() {
   };
 
   return (
-    <div className="space-y-5 pb-4">
-      <button onClick={() => router.history.back()} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+    <AuthGate>
+      <div className="space-y-5 pb-4">
+        <button onClick={() => router.history.back()} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
         <ArrowLeft className="h-3.5 w-3.5" /> Back
       </button>
 
@@ -151,6 +153,7 @@ function Report() {
         <Sparkles className="h-4 w-4" /> Open prediction market
       </button>
     </div>
+    </AuthGate>
   );
 }
 

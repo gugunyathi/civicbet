@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ArrowLeftRight, Coins, ArrowUpRight, ArrowDownRight, User, Search, Copy, ExternalLink, Clock, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { CURRENCY_META, RATES, useStore, type Currency } from "@/lib/store";
+import { AuthGate } from "@/components/AuthGate";
 
 export const Route = createFileRoute("/wallet")({
   component: Wallet,
@@ -135,12 +136,13 @@ function Wallet() {
   };
 
   return (
-    <div className="space-y-5 pb-4">
-      <header>
-        <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Wallet</p>
-        <h1 className="font-display mt-1 text-2xl font-bold">Balances & payouts</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Points, USDC on Base, and USDT on Solana. Bet settlements convert automatically.</p>
-      </header>
+    <AuthGate>
+      <div className="space-y-5 pb-4">
+        <header>
+          <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Wallet</p>
+          <h1 className="font-display mt-1 text-2xl font-bold">Balances & payouts</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Points, USDC on Base, and USDT on Solana. Bet settlements convert automatically.</p>
+        </header>
 
       {/* Base Smart Wallet Glowing Card */}
       <div className="relative overflow-hidden rounded-3xl border border-blue-500/30 bg-gradient-to-br from-blue-950/40 via-black/40 to-slate-900/40 p-4 shadow-[0_0_20px_rgba(0,82,255,0.15)]">
@@ -383,6 +385,7 @@ function Wallet() {
         </div>
       </section>
     </div>
+    </AuthGate>
   );
 }
 

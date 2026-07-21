@@ -5,8 +5,8 @@ import { toast } from "sonner";
 import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CURRENCY_META, useStore, type Currency, toPoints } from "@/lib/store";
-import { TxRow } from "@/routes/wallet";
 import { Award, Trophy, TrendingUp, Wallet as WalletIcon, Save } from "lucide-react";
+import { AuthGate } from "@/components/AuthGate";
 
 export const Route = createFileRoute("/profile")({
   component: Profile,
@@ -83,8 +83,9 @@ function Profile() {
     .reduce((s, t) => s + toPoints(t.amount, t.currency), 0);
 
   return (
-    <div className="space-y-5 pb-4">
-      {/* Header */}
+    <AuthGate>
+      <div className="space-y-5 pb-4">
+        {/* Header */}
       <motion.section initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-3xl p-4">
         <div className="flex items-center gap-3">
           <div className="grid h-14 w-14 place-items-center rounded-2xl border border-white/10 text-3xl"
@@ -304,6 +305,7 @@ function Profile() {
         </TabsContent>
       </Tabs>
     </div>
+    </AuthGate>
   );
 }
 

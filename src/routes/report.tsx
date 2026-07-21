@@ -1,9 +1,10 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { SERVICES, CITIES, type ServiceKind } from "@/lib/data";
 import { useStore } from "@/lib/store";
 import { ArrowLeft, Sparkles, Upload, X } from "lucide-react";
+import { InteractiveMap } from "@/components/InteractiveMap";
 
 export const Route = createFileRoute("/report")({
   component: Report,
@@ -20,6 +21,20 @@ function Report() {
   const [suburb, setSuburb] = useState("");
   const [note, setNote] = useState("");
   const [photo, setPhoto] = useState<string | null>(null);
+  const [coords, setCoords] = useState<{ lat: number; lng: number }>({ lat: -26.2, lng: 28.0 });
+
+  // Try to obtain the user's initial location to center the report map
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        },
+        (err) => console.log("Defaulting report map center to JHB:", err.message),
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
+    }
+  }, []);
 
   const onFile = (f: File | null) => {
     if (!f) return;
@@ -36,6 +51,7 @@ function Report() {
       ref, service: kind, city, suburb, address,
       title: `${SERVICES[kind].label} outage — ${address}, ${suburb}`,
       photoUrl: photo ?? undefined,
+      coords,
     });
     toast.success(`Market opened · ${ref}`, {
       description: "You earned +500 pts for creating this market.",
@@ -85,6 +101,23 @@ function Report() {
           </Field>
           <Field label="Suburb"><Input value={suburb} onChange={setSuburb} placeholder="e.g. Fourways" /></Field>
           <Field label="Address of issue"><Input value={address} onChange={setAddress} placeholder="e.g. Cedar Road" /></Field>
+          
+          <Field label="Pin Outage Location (Tap on map to reposition)">
+            <div className="h-48 rounded-xl overflow-hidden border border-white/10 relative bg-black/30">
+              <InteractiveMap
+                center={[coords.lat, coords.lng]}
+                zoom={14}
+                markers={[{ id: "picker", lat: coords.lat, lng: coords.lng, title: "Outage Pin Location", pulse: true }]}
+                showUserLocation={true}
+                interactive={true}
+                onMapClick={(newCoords) => setCoords(newCoords)}
+              />
+              <div className="absolute bottom-2 right-2 z-[1000] bg-black/75 backdrop-blur border border-white/10 px-2 py-1 rounded text-[10px] font-mono text-cyan-400">
+                {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
+              </div>
+            </div>
+          </Field>
+
           <Field label="Brief description (optional)">
             <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
               placeholder="Water outage since 6am, no notification…"

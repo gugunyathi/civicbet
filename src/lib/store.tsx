@@ -25,7 +25,7 @@ export type Bet = {
 export type Tx = {
   id: string;
   ts: string;
-  type: "bet_placed" | "bet_won" | "bet_lost" | "convert" | "deposit" | "reward";
+  type: "bet_placed" | "bet_won" | "bet_lost" | "convert" | "deposit" | "reward" | "withdrawal";
   currency: Currency;
   amount: number;            // signed
   note?: string;
@@ -56,6 +56,7 @@ export type Profile = {
   bio: string;
   avatar: string;             // emoji or data URL
   location: string;
+  walletAddress?: string;     // Base smart account address
 };
 
 /* -------- Conversion rates (mock) -------- */
@@ -82,6 +83,8 @@ type Store = {
   balances: Balances;
 
   markets: Market[];
+  trendingMarkets: Market[];
+  bettedMarkets: Market[];
   marketState: Record<string, MarketState>;
   getMarketState: (id: string) => MarketState;
 
@@ -111,52 +114,78 @@ type Store = {
     address: string;
     title: string;
     photoUrl?: string;
+    coords?: { lat: number; lng: number };
   }) => Market;
 
   convert: (from: Currency, to: Currency, amount: number) => void;
+  triggerFaucet: () => Promise<void>;
+  transfer: (currency: Currency, amount: number, toAddress: string) => Promise<void>;
+  deposit: (currency: Currency, amount: number) => Promise<void>;
 };
 
 const StoreCtx = createContext<Store | null>(null);
-const LS_KEY = "civicbet.state.v1";
-
-function loadState() {
-  if (typeof window === "undefined") return null;
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch { return null; }
-}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const initial = typeof window !== "undefined" ? loadState() : null;
-
-  const [profile, setProfileState] = useState<Profile>(initial?.profile ?? {
+  const [profile, setProfileState] = useState<Profile>({
     username: "@you",
     displayName: "Civic Voter",
     bio: "Prediction citizen. Reporting outages, betting on fixes.",
     avatar: "🦉",
     location: "Johannesburg, ZA",
   });
-  const [balances, setBalances] = useState<Balances>(initial?.balances ?? {
+  const [balances, setBalances] = useState<Balances>({
     points: 2480,
     usdc_base: 12.5,
     usdt_sol: 8.2,
   });
-  const [markets, setMarkets] = useState<Market[]>(initial?.markets ?? SEED_MARKETS);
-  const [marketState, setMarketState] = useState<Record<string, MarketState>>(initial?.marketState ?? {});
-  const [bets, setBets] = useState<Bet[]>(initial?.bets ?? []);
-  const [txs, setTxs] = useState<Tx[]>(initial?.txs ?? []);
+  const [markets, setMarkets] = useState<Market[]>(SEED_MARKETS);
+  const [trendingMarkets, setTrendingMarkets] = useState<Market[]>(SEED_MARKETS);
+  const [bettedMarkets, setBettedMarkets] = useState<Market[]>([]);
+  const [marketState, setMarketState] = useState<Record<string, MarketState>>({});
+  const [bets, setBets] = useState<Bet[]>([]);
+  const [txs, setTxs] = useState<Tx[]>([]);
 
+  // Function to load whole state from the API
+  const refreshState = async () => {
+    try {
+      const res = await fetch("/api/state");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.profile) setProfileState(data.profile);
+        if (data.balances) setBalances(data.balances);
+        if (data.markets) setMarkets(data.markets);
+        if (data.trending) setTrendingMarkets(data.trending);
+        if (data.betted) setBettedMarkets(data.betted);
+        if (data.marketState) setMarketState(data.marketState);
+        if (data.bets) setBets(data.bets);
+        if (data.txs) setTxs(data.txs);
+      }
+    } catch (err) {
+      console.error("Failed to load state from API:", err);
+    }
+  };
+
+  // Load state on boot
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem(LS_KEY, JSON.stringify({ profile, balances, markets, marketState, bets, txs }));
-  }, [profile, balances, markets, marketState, bets, txs]);
+    refreshState();
+  }, []);
 
-  const setProfile = (p: Partial<Profile>) => setProfileState(prev => ({ ...prev, ...p }));
+  const setProfile = (p: Partial<Profile>) => {
+    // Optimistic Update
+    setProfileState(prev => {
+      const updated = { ...prev, ...p };
+      // Save in background
+      fetch("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updated),
+      }).then(refreshState);
+      return updated;
+    });
+  };
 
   const getMarketState = (id: string): MarketState =>
     marketState[id] ?? { confirmations: [], status: "open" };
-
-  const pushTx = (tx: Omit<Tx, "id" | "ts">) => {
-    setTxs(prev => [{ ...tx, id: crypto.randomUUID(), ts: new Date().toISOString() }, ...prev]);
-  };
 
   const mockHash = (chain: string) => {
     const chars = "0123456789abcdef";
@@ -172,6 +201,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const option = market.options[optionIndex];
     const odds = side === "yes" ? option.yesOdds : option.noOdds;
     const estPayout = +(stake * odds).toFixed(4);
+
     const bet: Bet = {
       id: crypto.randomUUID(),
       marketId: market.id,
@@ -186,65 +216,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       status: "active",
       placedAt: new Date().toISOString(),
     };
+
+    // Optimistic Update
     setBets(prev => [bet, ...prev]);
     setBalances(prev => ({ ...prev, [currency]: +(prev[currency] - stake).toFixed(6) }));
-    pushTx({
-      type: "bet_placed",
-      currency,
-      amount: -stake,
-      marketId: market.id,
-      betId: bet.id,
-      note: `${side.toUpperCase()} @ ${odds.toFixed(2)}× · ${option.label}`,
-      txHash: currency !== "points" ? mockHash(CURRENCY_META[currency].chain) : undefined,
-    });
-    return bet;
-  };
-
-  const settleMarket = (marketId: string, outcomeOption: number) => {
-    setMarketState(prev => ({
-      ...prev,
-      [marketId]: {
-        ...(prev[marketId] ?? { confirmations: [], status: "open" }),
-        status: "resolved",
-        outcome: { optionIndex: outcomeOption },
-        settledAt: new Date().toISOString(),
+    setTxs(prev => [
+      {
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        type: "bet_placed",
+        currency,
+        amount: -stake,
+        marketId: market.id,
+        betId: bet.id,
+        note: `${side.toUpperCase()} @ ${odds.toFixed(2)}× · ${option.label}`,
+        txHash: currency !== "points" ? mockHash(CURRENCY_META[currency].chain) : undefined,
       },
-    }));
-    // resolve bets
-    setBets(prevBets => {
-      const updated = prevBets.map(b => {
-        if (b.marketId !== marketId || b.status !== "active") return b;
-        const restored = true; // outcome semantic below
-        const isWinner =
-          b.optionIndex === outcomeOption ? b.side === "yes" : b.side === "no";
-        const payout = isWinner ? +(b.stake * b.odds).toFixed(6) : 0;
-        // credit winner
-        if (isWinner) {
-          setBalances(prev => ({ ...prev, [b.currency]: +(prev[b.currency] + payout).toFixed(6) }));
-          pushTx({
-            type: "bet_won",
-            currency: b.currency,
-            amount: payout,
-            marketId,
-            betId: b.id,
-            note: `WON ${b.side.toUpperCase()} · ${b.optionLabel}`,
-            txHash: b.currency !== "points" ? mockHash(CURRENCY_META[b.currency].chain) : undefined,
-          });
-        } else {
-          pushTx({
-            type: "bet_lost",
-            currency: b.currency,
-            amount: 0,
-            marketId,
-            betId: b.id,
-            note: `LOST ${b.side.toUpperCase()} · ${b.optionLabel}`,
-          });
-        }
-        void restored;
-        return { ...b, status: isWinner ? "won" as const : "lost" as const, payout };
-      });
-      return updated;
-    });
+      ...prev,
+    ]);
+
+    // Send to server in background
+    fetch("/api/bet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        marketId: market.id,
+        optionIndex,
+        side,
+        currency,
+        stake,
+      }),
+    }).then(refreshState);
+
+    return bet;
   };
 
   const submitConfirmation: Store["submitConfirmation"] = (marketId, input) => {
@@ -256,33 +260,55 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       proofUrl: input.proofUrl,
       notes: input.notes,
     };
-    let settled = false;
-    setMarketState(prev => {
-      const cur = prev[marketId] ?? { confirmations: [], status: "open" as const };
-      const confirmations = [conf, ...cur.confirmations];
-      // Settle when >=2 confirmations agree it was restored
-      const restoredCount = confirmations.filter(c => c.restored).length;
-      let status = cur.status;
-      if (restoredCount >= 2 && status !== "resolved") {
-        status = "resolved";
-        settled = true;
-      } else if (restoredCount === 1) {
-        status = "pending_settlement";
-      }
-      return { ...prev, [marketId]: { ...cur, confirmations, status } };
-    });
 
-    // reward the scout with points
+    // Optimistic calculation
+    const cur = marketState[marketId] ?? { confirmations: [], status: "open" as const };
+    const confirmations = [conf, ...cur.confirmations];
+    const restoredCount = confirmations.filter(c => c.restored).length;
+    let status = cur.status;
+    let settled = false;
+    if (restoredCount >= 2 && status !== "resolved") {
+      status = "resolved";
+      settled = true;
+    } else if (restoredCount === 1) {
+      status = "pending_settlement";
+    }
+
+    // Update local state optimistically
+    setMarketState(prev => ({
+      ...prev,
+      [marketId]: { ...cur, confirmations, status },
+    }));
+
     if (input.scout === profile.username || !input.scout) {
       setBalances(prev => ({ ...prev, points: prev.points + 250 }));
-      pushTx({ type: "reward", currency: "points", amount: 250, marketId, note: "Scout confirmation reward" });
+      setTxs(prev => [
+        {
+          id: crypto.randomUUID(),
+          ts: new Date().toISOString(),
+          type: "reward",
+          currency: "points" as const,
+          amount: 250,
+          marketId,
+          note: "Scout confirmation reward",
+        },
+        ...prev,
+      ],);
     }
 
-    if (settled) {
-      // Determine winning option: the earliest time-bucket restored — pick option 0 by default
-      const market = markets.find(m => m.id === marketId);
-      if (market) settleMarket(marketId, 0);
-    }
+    // Submit to server
+    fetch("/api/confirmation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        marketId,
+        restored: input.restored,
+        notes: input.notes,
+        proofUrl: input.proofUrl,
+        scout: input.scout,
+      }),
+    }).then(refreshState);
+
     return { settled };
   };
 
@@ -301,16 +327,46 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       scoutsOnSite: 0,
       historicalAvgFixHours: 6,
       volume: 0,
-      coords: { lat: -26.2 + Math.random() * 0.4, lng: 28 + Math.random() * 0.4 },
+      coords: input.coords ?? { lat: -26.2 + Math.random() * 0.4, lng: 28 + Math.random() * 0.4 },
       options: [
         { label: "Restored within 1 hour",  yesOdds: 4.2, noOdds: 1.22, yesPool: 100, noPool: 400, yesPct: 20 },
         { label: "Restored within 4 hours", yesOdds: 2.1, noOdds: 1.75, yesPool: 200, noPool: 200, yesPct: 50 },
         { label: "Takes more than 4 hours", yesOdds: 1.45, noOdds: 2.6, yesPool: 400, noPool: 150, yesPct: 70 },
       ],
     };
+
+    // Optimistic Update
     setMarkets(prev => [m, ...prev]);
     setBalances(prev => ({ ...prev, points: prev.points + 500 }));
-    pushTx({ type: "reward", currency: "points", amount: 500, marketId: m.id, note: `Opened market · ${input.ref}` });
+    setTxs(prev => [
+      {
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        type: "reward" as const,
+        currency: "points" as const,
+        amount: 500,
+        marketId: m.id,
+        note: `Opened market · ${input.ref}`,
+      },
+      ...prev,
+    ]);
+
+    // Send to server in background
+    fetch("/api/market", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ref: input.ref,
+        service: input.service,
+        city: input.city,
+        suburb: input.suburb,
+        address: input.address,
+        title: input.title,
+        photoUrl: input.photoUrl,
+        coords: m.coords,
+      }),
+    }).then(refreshState);
+
     return m;
   };
 
@@ -319,30 +375,94 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (amount <= 0 || balances[from] < amount) throw new Error("Invalid amount");
     const pts = toPoints(amount, from);
     const outAmt = +fromPoints(pts, to).toFixed(6);
+
+    // Optimistic Update
     setBalances(prev => ({
       ...prev,
       [from]: +(prev[from] - amount).toFixed(6),
       [to]: +(prev[to] + outAmt).toFixed(6),
     }));
-    pushTx({
-      type: "convert", currency: from, amount: -amount,
-      note: `Convert ${amount} ${CURRENCY_META[from].symbol} → ${outAmt} ${CURRENCY_META[to].symbol}`,
-      txHash: from !== "points" ? mockHash(CURRENCY_META[from].chain) : undefined,
+
+    setTxs(prev => [
+      {
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        type: "convert" as const,
+        currency: from,
+        amount: -amount,
+        note: `Convert ${amount} ${CURRENCY_META[from].symbol} → ${outAmt} ${CURRENCY_META[to].symbol}`,
+        txHash: from !== "points" ? mockHash(CURRENCY_META[from].chain) : undefined,
+      },
+      {
+        id: crypto.randomUUID(),
+        ts: new Date().toISOString(),
+        type: "convert" as const,
+        currency: to,
+        amount: outAmt,
+        note: `Received from conversion`,
+        txHash: to !== "points" ? mockHash(CURRENCY_META[to].chain) : undefined,
+      },
+      ...prev,
+    ]);
+
+    // Send to server in background
+    fetch("/api/convert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, amount }),
+    }).then(refreshState);
+  };
+
+  const triggerFaucet = async () => {
+    try {
+      const res = await fetch("/api/faucet", { method: "POST" });
+      if (res.ok) {
+        await refreshState();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to claim faucet");
+      }
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
+  const transfer = async (currency: Currency, amount: number, toAddress: string) => {
+    if (amount <= 0 || balances[currency] < amount) throw new Error("Invalid amount or insufficient balance");
+    const res = await fetch("/api/transfer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currency, amount, toAddress }),
     });
-    pushTx({
-      type: "convert", currency: to, amount: outAmt,
-      note: `Received from conversion`,
-      txHash: to !== "points" ? mockHash(CURRENCY_META[to].chain) : undefined,
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.error || "Failed to execute transfer");
+    }
+    await refreshState();
+  };
+
+  const deposit = async (currency: Currency, amount: number) => {
+    if (amount <= 0) throw new Error("Invalid amount");
+    const res = await fetch("/api/deposit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currency, amount }),
     });
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.error || "Failed to execute deposit");
+    }
+    await refreshState();
   };
 
   const value = useMemo<Store>(() => ({
     profile, setProfile,
     balances,
-    markets, marketState, getMarketState,
+    markets, trendingMarkets, bettedMarkets, marketState, getMarketState,
     bets, txs,
-    placeBet, submitConfirmation, createMarket, convert,
-  }), [profile, balances, markets, marketState, bets, txs]);
+    placeBet, submitConfirmation, createMarket, convert, triggerFaucet, transfer, deposit,
+  }), [profile, balances, markets, trendingMarkets, bettedMarkets, marketState, bets, txs]);
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

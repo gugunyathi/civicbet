@@ -14,7 +14,29 @@ export const Route = createFileRoute("/profile")({
 });
 
 function Profile() {
-  const { profile, setProfile, balances, bets, txs } = useStore();
+  const { profile, setProfile, balances, bets, txs, triggerFaucet } = useStore();
+  const [claimingFaucet, setClaimingFaucet] = useState(false);
+  const [faucetStep, setFaucetStep] = useState(0);
+
+  const handleFaucet = async () => {
+    try {
+      setClaimingFaucet(true);
+      setFaucetStep(1);
+      await new Promise(r => setTimeout(r, 600));
+      setFaucetStep(2);
+      await new Promise(r => setTimeout(r, 600));
+      setFaucetStep(3);
+      await triggerFaucet();
+      toast.success("USDC claimed successfully!", {
+        description: "100.00 USDC has been minted and transferred to your Base Smart Account."
+      });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setClaimingFaucet(false);
+      setFaucetStep(0);
+    }
+  };
 
   // Aggregate PnL (in normalized points)
   const pnl = useMemo(() => {
@@ -73,6 +95,12 @@ function Profile() {
             <div className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">Civic profile</div>
             <div className="font-display text-lg font-bold">{profile.displayName}</div>
             <div className="text-xs text-muted-foreground">{profile.username} · {profile.location}</div>
+            {profile.walletAddress && (
+              <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-blue-400 font-semibold">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+                <span>Base Balance: {balances.usdc_base.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC</span>
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[11px]">
@@ -136,27 +164,90 @@ function Profile() {
         </TabsContent>
 
         {/* Wallet */}
-        <TabsContent value="wallet" className="mt-3 space-y-2">
-          {(Object.keys(CURRENCY_META) as Currency[]).map(c => (
-            <div key={c} className="glass flex items-center gap-3 rounded-2xl p-3">
-              <div className="grid h-10 w-10 place-items-center rounded-full border border-white/10 bg-black/30 text-xs font-semibold"
-                style={{ color: CURRENCY_META[c].color }}>
-                {CURRENCY_META[c].symbol.slice(0, 2)}
-              </div>
-              <div className="flex-1">
-                <div className="text-sm font-medium">{CURRENCY_META[c].label}</div>
-                <div className="text-[10px] text-muted-foreground">{CURRENCY_META[c].chain}</div>
-              </div>
-              <div className="text-right font-mono">
-                <div className="text-lg font-semibold">{balances[c].toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
-                <div className="text-[10px] text-muted-foreground">{CURRENCY_META[c].symbol}</div>
+        <TabsContent value="wallet" className="mt-3 space-y-3">
+          {/* Base Smart Wallet Glowing Card */}
+          <div className="relative overflow-hidden rounded-3xl border border-blue-500/30 bg-gradient-to-br from-blue-950/40 via-black/40 to-slate-900/40 p-4 shadow-[0_0_20px_rgba(0,82,255,0.15)]">
+            <div className="absolute top-0 right-0 p-3 text-xs font-mono font-bold text-blue-400">
+              BASE NETWORK
+            </div>
+            
+            <div className="flex items-center gap-2">
+              <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[10px] font-mono tracking-wider text-emerald-400 uppercase">
+                Smart Account Connected
+              </span>
+            </div>
+
+            <div className="mt-3">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Account Address</span>
+              <div className="mt-0.5 flex items-center justify-between gap-2 rounded-xl bg-black/40 border border-white/5 px-3 py-2 font-mono text-xs">
+                <span className="text-foreground truncate">{profile.walletAddress || "0x..."}</span>
+                <button onClick={() => {
+                  if (profile.walletAddress) {
+                    navigator.clipboard.writeText(profile.walletAddress);
+                    toast.success("Wallet address copied!");
+                  }
+                }} className="text-blue-400 hover:text-blue-300 px-1 font-sans text-[11px] font-semibold">
+                  Copy
+                </button>
               </div>
             </div>
-          ))}
+
+            <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/5 pt-3">
+              <div>
+                <span className="text-[9px] uppercase tracking-wider text-muted-foreground">Gas Sponsorship</span>
+                <div className="font-mono text-xs text-blue-400 font-semibold">100% Sponsored (Free)</div>
+              </div>
+              <div>
+                <span className="text-[9px] uppercase tracking-wider text-muted-foreground">Security Mode</span>
+                <div className="font-mono text-xs text-blue-400 font-semibold">Auto-Sign Session</div>
+              </div>
+            </div>
+
+            {/* Faucet button */}
+            <div className="mt-4">
+              <button
+                disabled={claimingFaucet}
+                onClick={handleFaucet}
+                className="w-full rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-blue-900/20 disabled:opacity-50"
+              >
+                {claimingFaucet ? (
+                  <span className="animate-pulse">
+                    {faucetStep === 1 ? "Verifying Passkey..." : faucetStep === 2 ? "Sponsoring Gas..." : "Minting USDC on Base..."}
+                  </span>
+                ) : (
+                  <>
+                    <span>🎁</span> Claim Base USDC Faucet (+100 USDC)
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Wallet List */}
+          <div className="space-y-1.5">
+            {(Object.keys(CURRENCY_META) as Currency[]).map(c => (
+              <div key={c} className="glass flex items-center gap-3 rounded-2xl p-3">
+                <div className="grid h-10 w-10 place-items-center rounded-full border border-white/10 bg-black/30 text-xs font-semibold"
+                  style={{ color: CURRENCY_META[c].color }}>
+                  {CURRENCY_META[c].symbol.slice(0, 2)}
+                </div>
+                <div className="flex-1">
+                  <div className="text-sm font-medium">{CURRENCY_META[c].label}</div>
+                  <div className="text-[10px] text-muted-foreground">{CURRENCY_META[c].chain}</div>
+                </div>
+                <div className="text-right font-mono">
+                  <div className="text-lg font-semibold">{balances[c].toLocaleString(undefined, { maximumFractionDigits: 4 })}</div>
+                  <div className="text-[10px] text-muted-foreground">{CURRENCY_META[c].symbol}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
           <Link to="/wallet"
             className="mt-1 flex items-center justify-center gap-2 rounded-full py-2.5 text-sm font-semibold text-primary-foreground"
             style={{ background: "var(--gradient-neon)", boxShadow: "var(--shadow-neon)" }}>
-            <WalletIcon className="h-4 w-4" /> Manage wallet
+            <WalletIcon className="h-4 w-4" /> Convert & Withdraw Assets
           </Link>
         </TabsContent>
 

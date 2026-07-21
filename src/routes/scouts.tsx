@@ -1,12 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Radar, Camera, MapPin, ShieldCheck, Zap, CheckCircle2, XCircle, Upload, Clock, Users, Coins } from "lucide-react";
+import { Radar, Camera, MapPin, ShieldCheck, Zap, CheckCircle2, XCircle, Upload, Clock, Users, Coins, Trophy } from "lucide-react";
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { cityById, SERVICES } from "@/lib/data";
+import { cityById, SERVICES, type ServiceKind } from "@/lib/data";
 import { ServiceIcon } from "@/components/ServiceIcon";
 import { useStore } from "@/lib/store";
 import { formatDistanceToNow } from "date-fns";
+import { InteractiveMap } from "@/components/InteractiveMap";
+import { Leaderboard } from "@/components/Leaderboard";
 
 export const Route = createFileRoute("/scouts")({
   component: Scouts,
@@ -14,8 +16,200 @@ export const Route = createFileRoute("/scouts")({
 });
 
 function Scouts() {
-  const { markets, getMarketState } = useStore();
+  const { markets, getMarketState, profile } = useStore();
   const open = markets.filter(m => getMarketState(m.id).status !== "resolved").slice(0, 6);
+
+  const [scoutMode, setScoutMode] = useState(false);
+  const [realScouts, setRealScouts] = useState<any[]>([]);
+  const [simulatedScouts, setSimulatedScouts] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"jobs" | "leaderboard">("jobs");
+
+  // 1. Initialize simulated moving scouts
+  useEffect(() => {
+    const names = ["Scout_Alpha", "Scout_Bravo", "Scout_Delta", "UrbanWatcher", "CityFixer"];
+    const colors = ["var(--cyan)", "var(--neon)", "var(--magenta)"];
+    
+    // Johannesburg region base coords: lat -26.2, lng 28.0
+    setSimulatedScouts(
+      Array.from({ length: 4 }).map((_, i) => ({
+        id: `sim_${i}`,
+        username: `@${names[i]}`,
+        displayName: names[i],
+        lat: -26.2 + Math.random() * 0.15 - 0.075,
+        lng: 28.0 + Math.random() * 0.15 - 0.075,
+        targetLat: -26.2 + Math.random() * 0.15 - 0.075,
+        targetLng: 28.0 + Math.random() * 0.15 - 0.075,
+        color: colors[i % colors.length],
+        speed: 0.002 + Math.random() * 0.003
+      }))
+    );
+  }, []);
+
+  // 2. Animate simulated scouts
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSimulatedScouts(prev => prev.map(s => {
+        const dLat = s.targetLat - s.lat;
+        const dLng = s.targetLng - s.lng;
+        const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+
+        if (dist < 0.005) {
+          return {
+            ...s,
+            targetLat: -26.2 + Math.random() * 0.15 - 0.075,
+            targetLng: 28.0 + Math.random() * 0.15 - 0.075,
+          };
+        } else {
+          return {
+            ...s,
+            lat: s.lat + (dLat / dist) * s.speed * 0.1,
+            lng: s.lng + (dLng / dist) * s.speed * 0.1,
+          };
+        }
+      }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 3. Track user's own location & post to server when Scout Mode is ON
+  useEffect(() => {
+    if (!scoutMode || !navigator.geolocation) return;
+
+    let lastPost = 0;
+    const reportLocation = (lat: number, lng: number) => {
+      // Throttle posts to every 8 seconds
+      const now = Date.now();
+      if (now - lastPost < 8000) return;
+      lastPost = now;
+
+      fetch("/api/scout/location", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: profile.username,
+          displayName: profile.displayName,
+          lat,
+          lng,
+        })
+      }).catch(err => console.error("Error posting scout location:", err));
+    };
+
+    const onSuccess = (pos: GeolocationPosition) => {
+      reportLocation(pos.coords.latitude, pos.coords.longitude);
+    };
+
+    const onError = (err: GeolocationPositionError) => {
+      console.warn("Geolocation watch position error:", err);
+      toast.error("Could not obtain high-accuracy GPS coordinates for live tracking.");
+    };
+
+    navigator.geolocation.getCurrentPosition(onSuccess, onError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+    });
+
+    const watchId = navigator.geolocation.watchPosition(onSuccess, onError, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+    });
+
+    toast.success("Scout Live Tracking Mode Activated!", {
+      description: "Your location is now being broadcast to other scouts.",
+    });
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [scoutMode, profile.username, profile.displayName]);
+
+  // 4. Fetch all active scouts from server every 5 seconds
+  useEffect(() => {
+    const fetchScouts = () => {
+      fetch("/api/scouts")
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            // Filter out self so we don't draw our own scout pin twice (InteractiveMap already draws our live position)
+            const others = data.filter((s: any) => s.username !== profile.username);
+            setRealScouts(others);
+          }
+        })
+        .catch(err => console.error("Error fetching active scouts:", err));
+    };
+
+    fetchScouts();
+    const interval = setInterval(fetchScouts, 5000);
+    return () => clearInterval(interval);
+  }, [profile.username]);
+
+  // Combine open incidents and active scouts as map markers
+  const openMarkets = markets.filter(m => getMarketState(m.id).status !== "resolved");
+  const incidentMarkers = openMarkets.map(m => {
+    const serviceColors = {
+      water: "var(--cyan)",
+      power: "var(--neon)",
+      sewage: "var(--magenta)",
+      refuse: "oklch(0.68 0.22 15)"
+    };
+    const color = (serviceColors as any)[m.service] || "var(--neon)";
+    return {
+      id: `incident_${m.id}`,
+      lat: m.coords?.lat ?? -26.2,
+      lng: m.coords?.lng ?? 28.0,
+      title: `${SERVICES[m.service as ServiceKind].label} Outage`,
+      description: `${m.suburb} · ${m.address}`,
+      color,
+      pulse: true
+    };
+  });
+
+  const scoutMarkers = [
+    ...realScouts.map(s => ({
+      id: `scout_${s.username}`,
+      lat: s.lat,
+      lng: s.lng,
+      title: `${s.displayName} (Live Scout)`,
+      description: s.username,
+      color: "var(--cyan)",
+      pulse: false,
+      iconHtml: `
+        <div class="relative flex items-center justify-center">
+          <span class="absolute inline-flex h-4 w-4 rounded-full bg-cyan-400 opacity-60 animate-ping"></span>
+          <div style="
+            width: 10px;
+            height: 10px;
+            background: var(--cyan);
+            border: 1.5px solid #ffffff;
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--cyan);
+          "></div>
+        </div>
+      `
+    })),
+    ...simulatedScouts.map(s => ({
+      id: `sim_${s.id}`,
+      lat: s.lat,
+      lng: s.lng,
+      title: `${s.displayName} (AI Scout)`,
+      description: s.username,
+      color: s.color,
+      pulse: false,
+      iconHtml: `
+        <div class="relative flex items-center justify-center">
+          <div style="
+            width: 9px;
+            height: 9px;
+            background: ${s.color};
+            border: 1.5px solid #ffffff;
+            border-radius: 50%;
+            box-shadow: 0 0 6px ${s.color};
+          "></div>
+        </div>
+      `
+    }))
+  ];
+
+  const allMarkers = [...incidentMarkers, ...scoutMarkers];
 
   return (
     <div className="space-y-5 pb-4">
@@ -40,123 +234,97 @@ function Scouts() {
         </div>
       </header>
 
-      {/* Live Scout Map */}
-      <section>
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="font-display text-sm font-semibold text-muted-foreground flex items-center gap-1.5">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-            </span>
-            Live Scout Map
-          </h2>
-          <span className="text-[10px] font-mono text-cyan-400 uppercase tracking-wider bg-cyan-500/10 px-2 py-0.5 rounded">Active Region</span>
-        </div>
-        <div className="glass overflow-hidden rounded-3xl border border-white/10 relative h-64 bg-[#050a15] flex items-center justify-center">
-          {/* Grid lines to simulate map styling */}
-          <div className="absolute inset-0 opacity-20 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:14px_24px]"></div>
-          
-          <ScoutRadarMap />
-          
-          {/* Map Overlay Stats */}
-          <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end pointer-events-none">
-            <div className="flex flex-col gap-1">
-              <div className="bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
-                <Users className="h-3 w-3 text-muted-foreground" />
-                <span className="text-xs font-mono">14 Active</span>
-              </div>
-              <div className="bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
-                <Coins className="h-3 w-3 text-amber-400" />
-                <span className="text-xs font-mono">Earning 50 pts/hr</span>
-              </div>
-            </div>
-            
-            <div className="h-10 w-10 rounded-full border border-white/10 flex items-center justify-center bg-black/40 backdrop-blur-md">
-              <Radar className="h-5 w-5 text-cyan-400 animate-[spin_4s_linear_infinite]" />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <h2 className="font-display text-sm font-semibold text-muted-foreground">Open jobs · confirm a restoration</h2>
-        <div className="mt-2 space-y-3">
-          {open.map(m => (
-            <ScoutJobCard key={m.id} marketId={m.id} />
-          ))}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-// Simulated active scouts on a map
-function ScoutRadarMap() {
-  const [scouts, setScouts] = useState(() => 
-    Array.from({ length: 8 }).map((_, i) => ({
-      id: i,
-      x: 20 + Math.random() * 60,
-      y: 20 + Math.random() * 60,
-      tx: 20 + Math.random() * 60,
-      ty: 20 + Math.random() * 60,
-      speed: 0.05 + Math.random() * 0.1,
-      color: ["var(--cyan)", "var(--neon)", "var(--yes)"][Math.floor(Math.random() * 3)],
-      name: ["Scout_Alpha", "Scout_Bravo", "Scout_Delta", "User8921", "UrbanWatcher", "CityFixer", "NightOwl", "CivicHero"][i]
-    }))
-  );
-
-  useEffect(() => {
-    let frameId: number;
-    let lastTime = Date.now();
-
-    const update = () => {
-      const now = Date.now();
-      const dt = (now - lastTime) / 1000;
-      lastTime = now;
-
-      setScouts(prev => prev.map(s => {
-        let { x, y, tx, ty, speed } = s;
-        const dx = tx - x;
-        const dy = ty - y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        // Target reached, pick a new random target
-        if (dist < 1) {
-          tx = 10 + Math.random() * 80;
-          ty = 10 + Math.random() * 80;
-        } else {
-          // Move towards target
-          x += (dx / dist) * speed * 10 * dt;
-          y += (dy / dist) * speed * 10 * dt;
-        }
-
-        return { ...s, x, y, tx, ty };
-      }));
-
-      frameId = requestAnimationFrame(update);
-    };
-
-    frameId = requestAnimationFrame(update);
-    return () => cancelAnimationFrame(frameId);
-  }, []);
-
-  return (
-    <div className="absolute inset-0 overflow-hidden rounded-3xl pointer-events-none">
-      {scouts.map(scout => (
-        <motion.div
-          key={scout.id}
-          className="absolute flex flex-col items-center gap-1"
-          style={{ left: `${scout.x}%`, top: `${scout.y}%`, x: "-50%", y: "-50%" }}
+      {/* Modern Anti-Slop tab bar */}
+      <div className="flex rounded-2xl bg-white/[0.02] p-1 border border-white/5">
+        <button
+          onClick={() => setActiveTab("jobs")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            activeTab === "jobs"
+              ? "bg-primary text-primary-foreground shadow-[0_2px_10px_rgba(0,0,0,0.5)]"
+              : "text-muted-foreground hover:text-white"
+          }`}
         >
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: scout.color }}></span>
-            <span className="relative inline-flex rounded-full h-3 w-3 shadow-[0_0_10px_rgba(255,255,255,0.5)] border border-black/50" style={{ backgroundColor: scout.color }}></span>
-          </span>
-          <span className="text-[8px] font-mono bg-black/60 backdrop-blur px-1 py-0.5 rounded text-white/80 whitespace-nowrap">
-            {scout.name}
-          </span>
-        </motion.div>
-      ))}
+          <Radar className="h-3.5 w-3.5" />
+          Incident Radar
+        </button>
+        <button
+          onClick={() => setActiveTab("leaderboard")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+            activeTab === "leaderboard"
+              ? "bg-primary text-primary-foreground shadow-[0_2px_10px_rgba(0,0,0,0.5)]"
+              : "text-muted-foreground hover:text-white"
+          }`}
+        >
+          <Trophy className="h-3.5 w-3.5" />
+          Citizen Ranks
+        </button>
+      </div>
+
+      {activeTab === "jobs" ? (
+        <>
+          {/* Live Scout Map */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-display text-sm font-semibold text-muted-foreground flex items-center gap-1.5">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                </span>
+                Live Scout Map
+              </h2>
+              <button
+                onClick={() => setScoutMode(p => !p)}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold transition-all duration-300 border ${
+                  scoutMode
+                    ? "bg-cyan-500/10 border-cyan-400 text-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.2)] animate-pulse"
+                    : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10 hover:border-white/20"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${scoutMode ? "bg-cyan-400 animate-ping" : "bg-muted-foreground"}`}></span>
+                {scoutMode ? "Broadcasting Location" : "Go Online as Scout"}
+              </button>
+            </div>
+            <div className="glass overflow-hidden rounded-3xl border border-white/10 relative h-72 bg-[#050a15]">
+              <InteractiveMap
+                center={[-26.2, 28.0]}
+                zoom={12}
+                markers={allMarkers}
+                showUserLocation={true}
+                interactive={true}
+              />
+              
+              {/* Map Overlay Stats */}
+              <div className="absolute bottom-3 left-3 right-3 flex justify-between items-end pointer-events-none z-[1000]">
+                <div className="flex flex-col gap-1">
+                  <div className="bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
+                    <Users className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-xs font-mono">{1 + realScouts.length + simulatedScouts.length} Active</span>
+                  </div>
+                  <div className="bg-black/60 backdrop-blur px-2.5 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
+                    <Coins className="h-3 w-3 text-amber-400" />
+                    <span className="text-xs font-mono">Earning 50 pts/hr</span>
+                  </div>
+                </div>
+                
+                <div className="h-10 w-10 rounded-full border border-white/10 flex items-center justify-center bg-black/40 backdrop-blur-md">
+                  <Radar className="h-5 w-5 text-cyan-400 animate-[spin_4s_linear_infinite]" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <h2 className="font-display text-sm font-semibold text-muted-foreground">Open jobs · confirm a restoration</h2>
+            <div className="mt-2 space-y-3">
+              {open.map(m => (
+                <ScoutJobCard key={m.id} marketId={m.id} />
+              ))}
+            </div>
+          </section>
+        </>
+      ) : (
+        <Leaderboard />
+      )}
     </div>
   );
 }
